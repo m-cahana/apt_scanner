@@ -199,6 +199,74 @@ class CraigslistScraper(BaseScraper):
 
         return listing
 
+    async def scrape_single_page(
+        self,
+        page: Page,
+        page_num: int,
+        min_price: Optional[int] = None,
+        max_price: Optional[int] = None,
+        bedrooms: Optional[int] = None,
+        neighborhood: Optional[str] = None
+    ) -> list[ScrapedListing]:
+        """Scrape a single page and fetch detail pages for those listings.
+
+        Returns fully processed listings for this page, ready to save.
+        """
+        listings = []
+
+        url = self._build_url(
+            page=page_num,
+            min_price=min_price,
+            max_price=max_price,
+            bedrooms=bedrooms,
+            neighborhood=neighborhood
+        )
+
+        print(f"Scraping: {url}")
+
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(2)
+        except PlaywrightTimeout:
+            print(f"Timeout loading page {page_num}")
+            return []
+
+        # Find all listing results - Craigslist uses data-pid for listing cards
+        results = await page.query_selector_all(".cl-search-result[data-pid], .gallery-card[data-pid], [data-pid]")
+
+        if not results:
+            print(f"No listings found on page {page_num}")
+            return []
+
+        for result in results:
+            listing = await self._extract_listing_from_result(result, page)
+            if listing and listing.price > 0:
+                listings.append(listing)
+
+        print(f"Page {page_num}: Found {len(results)} results, {len(listings)} valid listings")
+
+        # Fetch detail pages for GPS and images if enabled
+        if self.fetch_details and listings:
+            print(f"  Fetching detail pages for {len(listings)} listings...")
+            for i, listing in enumerate(listings):
+                try:
+                    listing = await self._fetch_detail_page(listing, page)
+
+                    # Classify neighborhood using GPS if available
+                    if listing.latitude and listing.longitude:
+                        nta_name = get_neighborhood(listing.latitude, listing.longitude)
+                        if nta_name:
+                            listing.neighborhood = nta_name
+                except Exception as e:
+                    print(f"    Error processing listing {i}: {e}")
+
+                # Small delay to avoid rate limiting
+                await asyncio.sleep(0.5)
+
+            print(f"  Completed detail pages for page {page_num}")
+
+        return listings
+
     async def scrape(
         self,
         max_pages: int = 5,
@@ -207,67 +275,32 @@ class CraigslistScraper(BaseScraper):
         bedrooms: Optional[int] = None,
         neighborhood: Optional[str] = None
     ) -> list[ScrapedListing]:
+        """Scrape all pages and return combined listings.
+
+        Note: For incremental saving, use scrape_single_page() instead.
+        """
         listings = []
         page = await self.get_page()
 
         try:
             for page_num in range(max_pages):
-                url = self._build_url(
-                    page=page_num,
+                page_listings = await self.scrape_single_page(
+                    page=page,
+                    page_num=page_num,
                     min_price=min_price,
                     max_price=max_price,
                     bedrooms=bedrooms,
                     neighborhood=neighborhood
                 )
 
-                print(f"Scraping: {url}")
-
-                try:
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    await asyncio.sleep(2)
-                except PlaywrightTimeout:
-                    print(f"Timeout loading page {page_num}")
-                    continue
-
-                # Find all listing results - Craigslist uses data-pid for listing cards
-                results = await page.query_selector_all(".cl-search-result[data-pid], .gallery-card[data-pid], [data-pid]")
-
-                if not results:
-                    print(f"No more listings found on page {page_num}")
+                if not page_listings and page_num > 0:
+                    print(f"No more listings found, stopping at page {page_num}")
                     break
 
-                for result in results:
-                    listing = await self._extract_listing_from_result(result, page)
-                    if listing and listing.price > 0:
-                        listings.append(listing)
-
-                print(f"Page {page_num}: Found {len(results)} results, {len(listings)} total listings")
+                listings.extend(page_listings)
 
                 # Small delay between pages
                 await asyncio.sleep(1)
-
-            # Fetch detail pages for GPS and images if enabled
-            if self.fetch_details and listings:
-                print(f"Fetching detail pages for {len(listings)} listings...")
-                for i, listing in enumerate(listings):
-                    try:
-                        listing = await self._fetch_detail_page(listing, page)
-
-                        # Classify neighborhood using GPS if available
-                        if listing.latitude and listing.longitude:
-                            nta_name = get_neighborhood(listing.latitude, listing.longitude)
-                            if nta_name:
-                                # Store original neighborhood text, use NTA for filtering
-                                listing.neighborhood = nta_name
-                    except Exception as e:
-                        print(f"  Error processing listing {i}: {e}")
-                        # Continue with next listing, don't crash entire scrape
-
-                    if (i + 1) % 10 == 0:
-                        print(f"  Processed {i + 1}/{len(listings)} detail pages")
-
-                    # Small delay to avoid rate limiting
-                    await asyncio.sleep(0.5)
 
         finally:
             await page.close()

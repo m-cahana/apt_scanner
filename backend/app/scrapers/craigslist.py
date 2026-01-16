@@ -250,14 +250,18 @@ class CraigslistScraper(BaseScraper):
             if self.fetch_details and listings:
                 print(f"Fetching detail pages for {len(listings)} listings...")
                 for i, listing in enumerate(listings):
-                    listing = await self._fetch_detail_page(listing, page)
+                    try:
+                        listing = await self._fetch_detail_page(listing, page)
 
-                    # Classify neighborhood using GPS if available
-                    if listing.latitude and listing.longitude:
-                        nta_name = get_neighborhood(listing.latitude, listing.longitude)
-                        if nta_name:
-                            # Store original neighborhood text, use NTA for filtering
-                            listing.neighborhood = nta_name
+                        # Classify neighborhood using GPS if available
+                        if listing.latitude and listing.longitude:
+                            nta_name = get_neighborhood(listing.latitude, listing.longitude)
+                            if nta_name:
+                                # Store original neighborhood text, use NTA for filtering
+                                listing.neighborhood = nta_name
+                    except Exception as e:
+                        print(f"  Error processing listing {i}: {e}")
+                        # Continue with next listing, don't crash entire scrape
 
                     if (i + 1) % 10 == 0:
                         print(f"  Processed {i + 1}/{len(listings)} detail pages")

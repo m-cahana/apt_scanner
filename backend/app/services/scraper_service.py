@@ -42,8 +42,9 @@ async def run_scrape_and_store(
     new_count = 0
     updated_count = 0
     scraped_external_ids: Set[str] = set()
+    batch_size = 50  # Commit every 50 listings to avoid losing progress
 
-    for item in scraped:
+    for i, item in enumerate(scraped):
         scraped_external_ids.add(item.external_id)
 
         # Check if listing already exists
@@ -99,6 +100,12 @@ async def run_scrape_and_store(
             db.add(new_listing)
             new_count += 1
 
+        # Commit in batches to save progress
+        if (i + 1) % batch_size == 0:
+            db.commit()
+            print(f"  Committed batch: {i + 1}/{len(scraped)} listings saved")
+
+    # Final commit for remaining items
     db.commit()
 
     return {

@@ -178,6 +178,20 @@ class CraigslistScraper(BaseScraper):
                 address = await address_elem.inner_text()
                 listing.address = address.strip()
 
+            # Extract laundry info from attribute groups
+            attr_elems = await page.query_selector_all(".attrgroup span")
+            for attr in attr_elems:
+                text = (await attr.inner_text()).lower()
+                if "w/d in unit" in text or "washer/dryer in unit" in text:
+                    listing.laundry_type = "in_unit"
+                    break
+                elif "laundry in bldg" in text or "laundry on site" in text:
+                    listing.laundry_type = "building"
+                    break
+                elif "no laundry" in text:
+                    listing.laundry_type = "none"
+                    break
+
         except PlaywrightTimeout:
             print(f"Timeout fetching detail page: {listing.url}")
         except Exception as e:

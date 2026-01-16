@@ -41,6 +41,7 @@ class Listing(Base):
     longitude = Column(Float, nullable=True)
     address = Column(String)
     sqft = Column(Integer, nullable=True)
+    laundry_type = Column(String, nullable=True)  # "in_unit", "building", "none", or null
     amenities = Column(JSON, default=list)
     images = Column(JSON, default=list)
     description = Column(Text, nullable=True)

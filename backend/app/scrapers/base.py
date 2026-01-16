@@ -17,6 +17,7 @@ class ScrapedListing:
     neighborhood: str
     address: str
     sqft: Optional[int] = None
+    laundry_type: Optional[str] = None  # "in_unit", "building", "none"
     amenities: list[str] = None
     images: list[str] = None
     description: Optional[str] = None

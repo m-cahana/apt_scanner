@@ -15,6 +15,7 @@ export interface Listing {
   longitude: number | null;
   address: string;
   sqft: number | null;
+  laundry_type: string | null;
   amenities: string[];
   images: string[];
   description: string | null;

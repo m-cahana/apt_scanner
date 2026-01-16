@@ -90,6 +90,12 @@ export function ListingCard({ listing, onFavoriteToggle }: ListingCardProps) {
           <span>{listing.bedrooms} bed</span>
           {listing.bathrooms > 0 && <span>{listing.bathrooms} bath</span>}
           {listing.sqft && <span>{listing.sqft.toLocaleString()} sqft</span>}
+          {listing.laundry_type && (
+            <span className={listing.laundry_type === 'none' ? 'text-gray-400' : ''}>
+              {listing.laundry_type === 'in_unit' ? 'W/D' :
+               listing.laundry_type === 'building' ? 'Laundry' : 'No laundry'}
+            </span>
+          )}
         </div>
 
         <a

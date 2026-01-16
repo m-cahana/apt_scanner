@@ -68,8 +68,11 @@ export function ListingMap({ listings, onFavoriteToggle }: ListingMapProps) {
                   <h3 className="font-medium text-sm text-gray-800 truncate">{listing.title}</h3>
                   <p className="text-xs text-gray-600 mt-1">
                     {listing.bedrooms === 0 ? 'Studio' : `${listing.bedrooms} BR`} • {listing.bathrooms} BA
-                    {listing.neighborhood_nta && ` • ${listing.neighborhood_nta}`}
+                    {listing.laundry_type && ` • ${listing.laundry_type === 'in_unit' ? 'W/D' : listing.laundry_type === 'building' ? 'Laundry' : 'No laundry'}`}
                   </p>
+                  {listing.neighborhood_nta && (
+                    <p className="text-xs text-gray-500">{listing.neighborhood_nta}</p>
+                  )}
                 </div>
               </div>
             </Tooltip>

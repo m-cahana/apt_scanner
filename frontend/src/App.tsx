@@ -5,7 +5,6 @@ import {
   fetchStats,
   addFavorite,
   removeFavorite,
-  triggerScrape,
 } from './api/client';
 import type { Listing, ListingFilters, Stats, Favorite } from './api/client';
 import { SearchForm } from './components/SearchForm';
@@ -20,7 +19,6 @@ function App() {
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isScraping, setIsScraping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [currentFilters, setCurrentFilters] = useState<ListingFilters>({ limit: 50 });
 
@@ -77,18 +75,8 @@ function App() {
     }
   };
 
-  const handleScrape = async () => {
-    setIsScraping(true);
-    try {
-      const result = await triggerScrape('craigslist', 2);
-      alert(`Scraped ${result.result.scraped} listings (${result.result.new} new)`);
-      await Promise.all([loadListings(currentFilters), loadStats()]);
-    } catch (err) {
-      alert('Scrape failed');
-      console.error(err);
-    } finally {
-      setIsScraping(false);
-    }
+  const handleRefresh = async () => {
+    await Promise.all([loadListings(currentFilters), loadStats(), loadFavorites()]);
   };
 
   const favoritesAsListings = favorites.map((f) => ({
@@ -111,11 +99,11 @@ function App() {
                 </span>
               )}
               <button
-                onClick={handleScrape}
-                disabled={isScraping}
+                onClick={handleRefresh}
+                disabled={isLoading}
                 className="px-4 py-2 bg-gray-900 text-white rounded-lg text-sm font-medium hover:bg-gray-800 disabled:bg-gray-400 transition-colors"
               >
-                {isScraping ? 'Scraping...' : 'Refresh Listings'}
+                {isLoading ? 'Loading...' : 'Refresh'}
               </button>
             </div>
           </div>

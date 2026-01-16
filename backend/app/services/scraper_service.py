@@ -68,6 +68,8 @@ async def run_scrape_and_store(
             if item.neighborhood:
                 existing.neighborhood = item.neighborhood
                 existing.neighborhood_nta = item.neighborhood  # NTA from geo lookup
+            if item.laundry_type:
+                existing.laundry_type = item.laundry_type
             updated_count += 1
         else:
             # Create new listing
@@ -85,6 +87,7 @@ async def run_scrape_and_store(
                 longitude=item.longitude,
                 address=item.address,
                 sqft=item.sqft,
+                laundry_type=item.laundry_type,
                 amenities=item.amenities,
                 images=item.images,
                 description=item.description,

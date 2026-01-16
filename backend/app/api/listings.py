@@ -21,7 +21,7 @@ def get_listings(
     source: Optional[str] = Query(None),
     is_active: bool = Query(True),
     skip: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=10000),  # Allow higher limit for map view
     db: Session = Depends(get_db)
 ):
     query = db.query(Listing)

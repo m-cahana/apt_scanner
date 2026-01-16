@@ -13,22 +13,40 @@ import { ListingMap } from './components/ListingMap';
 
 type Tab = 'browse' | 'map' | 'favorites';
 
+const PAGE_SIZE = 50;
+
 function App() {
   const [activeTab, setActiveTab] = useState<Tab>('browse');
   const [listings, setListings] = useState<Listing[]>([]);
+  const [mapListings, setMapListings] = useState<Listing[]>([]);
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [currentFilters, setCurrentFilters] = useState<ListingFilters>({ limit: 50 });
+  const [currentFilters, setCurrentFilters] = useState<ListingFilters>({});
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalListings, setTotalListings] = useState(0);
 
-  const loadListings = useCallback(async (filters: ListingFilters = { limit: 50 }) => {
+  const loadListings = useCallback(async (filters: ListingFilters = {}, page: number = 1) => {
     setIsLoading(true);
     setError(null);
     setCurrentFilters(filters);
+    setCurrentPage(page);
     try {
-      const data = await fetchListings(filters);
+      // Load paginated listings for browse
+      const browseFilters = {
+        ...filters,
+        skip: (page - 1) * PAGE_SIZE,
+        limit: PAGE_SIZE,
+      };
+      const data = await fetchListings(browseFilters);
       setListings(data);
+
+      // Load all listings for map (with same filters but no pagination)
+      const mapFilters = { ...filters, limit: 10000 };
+      const mapData = await fetchListings(mapFilters);
+      setMapListings(mapData);
+      setTotalListings(mapData.length);
     } catch (err) {
       setError('Failed to load listings');
       console.error(err);
@@ -69,15 +87,26 @@ function App() {
         await addFavorite(listing.id);
       }
       // Refresh both listings and favorites
-      await Promise.all([loadListings(currentFilters), loadFavorites()]);
+      await Promise.all([loadListings(currentFilters, currentPage), loadFavorites()]);
     } catch (err) {
       console.error('Failed to toggle favorite:', err);
     }
   };
 
   const handleRefresh = async () => {
-    await Promise.all([loadListings(currentFilters), loadStats(), loadFavorites()]);
+    await Promise.all([loadListings(currentFilters, currentPage), loadStats(), loadFavorites()]);
   };
+
+  const handleSearch = (filters: ListingFilters) => {
+    loadListings(filters, 1); // Reset to page 1 on new search
+  };
+
+  const handlePageChange = (page: number) => {
+    loadListings(currentFilters, page);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const totalPages = Math.ceil(totalListings / PAGE_SIZE);
 
   const favoritesAsListings = favorites.map((f) => ({
     ...f.listing,
@@ -152,7 +181,7 @@ function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {activeTab === 'browse' && (
           <div className="space-y-6">
-            <SearchForm onSearch={loadListings} isLoading={isLoading} />
+            <SearchForm onSearch={handleSearch} isLoading={isLoading} />
 
             {error && (
               <div className="bg-red-50 text-red-700 p-4 rounded-lg">
@@ -162,7 +191,7 @@ function App() {
 
             <div className="flex items-center justify-between">
               <p className="text-sm text-gray-600">
-                {listings.length} listings
+                Showing {((currentPage - 1) * PAGE_SIZE) + 1}-{Math.min(currentPage * PAGE_SIZE, totalListings)} of {totalListings} listings
               </p>
             </div>
 
@@ -171,12 +200,63 @@ function App() {
               onFavoriteToggle={handleFavoriteToggle}
               isLoading={isLoading}
             />
+
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div className="flex items-center justify-center gap-2 pt-4">
+                <button
+                  onClick={() => handlePageChange(currentPage - 1)}
+                  disabled={currentPage === 1 || isLoading}
+                  className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Previous
+                </button>
+
+                <div className="flex items-center gap-1">
+                  {/* Show page numbers */}
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                    let pageNum: number;
+                    if (totalPages <= 5) {
+                      pageNum = i + 1;
+                    } else if (currentPage <= 3) {
+                      pageNum = i + 1;
+                    } else if (currentPage >= totalPages - 2) {
+                      pageNum = totalPages - 4 + i;
+                    } else {
+                      pageNum = currentPage - 2 + i;
+                    }
+                    return (
+                      <button
+                        key={pageNum}
+                        onClick={() => handlePageChange(pageNum)}
+                        disabled={isLoading}
+                        className={`px-3 py-2 text-sm font-medium rounded-md ${
+                          currentPage === pageNum
+                            ? 'bg-gray-900 text-white'
+                            : 'text-gray-700 bg-white border border-gray-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        {pageNum}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <button
+                  onClick={() => handlePageChange(currentPage + 1)}
+                  disabled={currentPage === totalPages || isLoading}
+                  className="px-3 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  Next
+                </button>
+              </div>
+            )}
           </div>
         )}
 
         {activeTab === 'map' && (
           <div className="space-y-6">
-            <SearchForm onSearch={loadListings} isLoading={isLoading} />
+            <SearchForm onSearch={handleSearch} isLoading={isLoading} />
 
             {error && (
               <div className="bg-red-50 text-red-700 p-4 rounded-lg">
@@ -186,12 +266,12 @@ function App() {
 
             <div className="flex items-center justify-between">
               <p className="text-sm text-gray-600">
-                {listings.length} listings
+                {mapListings.length} listings on map
               </p>
             </div>
 
             <ListingMap
-              listings={listings}
+              listings={mapListings}
               onFavoriteToggle={handleFavoriteToggle}
             />
           </div>

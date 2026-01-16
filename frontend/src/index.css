@@ -3,3 +3,21 @@
 body {
   @apply bg-gray-50 text-gray-900 antialiased;
 }
+
+/* Leaflet tooltip styling for listing cards */
+.leaflet-tooltip.listing-tooltip {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  pointer-events: none;
+}
+
+.leaflet-tooltip.listing-tooltip::before {
+  display: none;
+}
+
+.leaflet-tooltip.listing-tooltip > div {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border-radius: 8px;
+}

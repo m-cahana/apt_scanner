@@ -17,7 +17,7 @@ def get_listings(
     bedrooms: Optional[str] = Query(None, description="Comma-separated bedroom values, e.g. '0,1,2'"),
     bathrooms: Optional[float] = Query(None),
     neighborhood: Optional[str] = Query(None),
-    neighborhood_nta: Optional[str] = Query(None),
+    neighborhood_nta: Optional[str] = Query(None, description="Comma-separated NTA neighborhoods, e.g. 'Williamsburg,Greenpoint'"),
     source: Optional[str] = Query(None),
     is_active: bool = Query(True),
     skip: int = Query(0, ge=0),
@@ -44,7 +44,10 @@ def get_listings(
     if neighborhood is not None:
         conditions.append(Listing.neighborhood.ilike(f"%{neighborhood}%"))
     if neighborhood_nta is not None:
-        conditions.append(Listing.neighborhood_nta.ilike(f"%{neighborhood_nta}%"))
+        # Support comma-separated values for multi-select
+        nta_values = [n.strip() for n in neighborhood_nta.split(',') if n.strip()]
+        if nta_values:
+            conditions.append(Listing.neighborhood_nta.in_(nta_values))
     if source is not None:
         conditions.append(Listing.source == source)
 

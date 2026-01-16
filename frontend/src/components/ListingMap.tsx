@@ -1,4 +1,4 @@
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Tooltip } from 'react-leaflet';
 import { Icon } from 'leaflet';
 import type { Listing } from '../api/client';
 import 'leaflet/dist/leaflet.css';
@@ -35,9 +35,10 @@ export function ListingMap({ listings, onFavoriteToggle }: ListingMapProps) {
         zoom={11}
         style={{ height: '100%', width: '100%' }}
       >
+        {/* CartoDB Positron - Light style */}
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
         />
         {mappableListings.map((listing) => (
           <Marker
@@ -45,6 +46,34 @@ export function ListingMap({ listings, onFavoriteToggle }: ListingMapProps) {
             position={[listing.latitude!, listing.longitude!]}
             icon={defaultIcon}
           >
+            {/* Hover tooltip with listing card */}
+            <Tooltip
+              direction="top"
+              offset={[0, -35]}
+              opacity={1}
+              className="listing-tooltip"
+            >
+              <div className="w-56 bg-white rounded-lg shadow-lg overflow-hidden">
+                {listing.images[0] && (
+                  <img
+                    src={listing.images[0]}
+                    alt={listing.title}
+                    className="w-full h-28 object-cover"
+                  />
+                )}
+                <div className="p-2">
+                  <p className="text-lg font-bold text-gray-900">
+                    ${listing.price.toLocaleString()}/mo
+                  </p>
+                  <h3 className="font-medium text-sm text-gray-800 truncate">{listing.title}</h3>
+                  <p className="text-xs text-gray-600 mt-1">
+                    {listing.bedrooms === 0 ? 'Studio' : `${listing.bedrooms} BR`} • {listing.bathrooms} BA
+                    {listing.neighborhood_nta && ` • ${listing.neighborhood_nta}`}
+                  </p>
+                </div>
+              </div>
+            </Tooltip>
+            {/* Click popup with full details */}
             <Popup>
               <div className="w-64">
                 {listing.images[0] && (

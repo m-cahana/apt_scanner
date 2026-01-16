@@ -15,10 +15,14 @@ def mark_offmarket_listings(
     source: str,
     active_before: Set[str],
     scraped_ids: Set[str],
-    scrape_run_id: Optional[int] = None
+    scrape_run_id: Optional[int] = None,
+    recently_seen_hours: int = 48
 ) -> int:
     """
-    Mark listings as off-market if they were active but not found in current scrape.
+    Mark listings as off-market if they were active, recently seen, but not found in current scrape.
+
+    Only marks listings as off-market if they were seen within `recently_seen_hours`.
+    This prevents incorrectly marking deep-page listings as off-market during shallow scrapes.
 
     Args:
         db: Database session
@@ -26,6 +30,7 @@ def mark_offmarket_listings(
         active_before: Set of external_ids that were active before scrape
         scraped_ids: Set of external_ids found in current scrape
         scrape_run_id: ID of the current scrape run for tracking
+        recently_seen_hours: Only consider listings seen within this many hours (default 48)
 
     Returns:
         Number of listings marked as off-market
@@ -36,14 +41,17 @@ def mark_offmarket_listings(
     if not disappeared:
         return 0
 
-    # Mark as inactive
+    # Only mark as off-market if recently seen (within threshold)
+    # This prevents shallow scrapes from marking deep-page listings as off-market
     now = datetime.utcnow()
+    recently_seen_cutoff = now - timedelta(hours=recently_seen_hours)
 
     count = db.query(Listing).filter(
         and_(
             Listing.source == source,
             Listing.external_id.in_(disappeared),
-            Listing.is_active == True
+            Listing.is_active == True,
+            Listing.last_seen >= recently_seen_cutoff  # Only if seen recently
         )
     ).update(
         {

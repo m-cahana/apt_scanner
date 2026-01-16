@@ -80,13 +80,20 @@ async def run_scheduled_scrape(
         scraped_ids = result.get("scraped_external_ids", set())
 
         # Mark off-market: active before but not in current scrape
-        off_market_count = mark_offmarket_listings(
-            db=db,
-            source=source,
-            active_before=active_before,
-            scraped_ids=scraped_ids,
-            scrape_run_id=scrape_run_id
-        )
+        # Only mark off-market if we scraped a significant portion (>50%) of known listings
+        # This prevents shallow scrapes from incorrectly marking listings as inactive
+        coverage_ratio = len(scraped_ids) / len(active_before) if active_before else 1.0
+        if coverage_ratio >= 0.5:
+            off_market_count = mark_offmarket_listings(
+                db=db,
+                source=source,
+                active_before=active_before,
+                scraped_ids=scraped_ids,
+                scrape_run_id=scrape_run_id
+            )
+        else:
+            off_market_count = 0
+            print(f"  Skipping off-market detection (coverage {coverage_ratio:.1%} < 50%)")
 
         # Update scrape run record
         scrape_run.completed_at = datetime.utcnow()

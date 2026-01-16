@@ -18,13 +18,20 @@ def get_engine():
         )
     else:
         # PostgreSQL configuration (Supabase or other)
+        # TCP keepalive settings to prevent connection drops during long scrapes
         return create_engine(
             db_url,
             poolclass=QueuePool,
             pool_size=5,
             max_overflow=10,
             pool_pre_ping=True,  # Verify connections before use
-            pool_recycle=300,    # Recycle connections every 5 minutes
+            pool_recycle=180,    # Recycle connections every 3 minutes
+            connect_args={
+                "keepalives": 1,
+                "keepalives_idle": 30,    # Send keepalive after 30s idle
+                "keepalives_interval": 10, # Retry every 10s
+                "keepalives_count": 5,     # Give up after 5 retries
+            }
         )
 
 

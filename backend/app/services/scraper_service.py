@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Optional, Set, List
+from typing import Optional, Set, List, Callable
 from sqlalchemy.orm import Session
 
 from ..models import Listing
@@ -9,82 +9,89 @@ from ..scrapers.craigslist import CraigslistScraper
 
 
 def save_listings_to_db(
-    db: Session,
+    db_factory: Callable[[], Session],
     scraped: List[ScrapedListing],
     scrape_run_id: Optional[int] = None
 ) -> tuple[int, int, Set[str]]:
     """Save a batch of scraped listings to the database.
 
+    Uses db_factory to create a fresh session, avoiding stale connections.
     Returns (new_count, updated_count, external_ids)
     """
     new_count = 0
     updated_count = 0
     scraped_external_ids: Set[str] = set()
 
-    for item in scraped:
-        scraped_external_ids.add(item.external_id)
+    # Create fresh DB session for this save operation
+    db = db_factory()
 
-        # Check if listing already exists
-        existing = db.query(Listing).filter(
-            Listing.source == item.source,
-            Listing.external_id == item.external_id
-        ).first()
+    try:
+        for item in scraped:
+            scraped_external_ids.add(item.external_id)
 
-        if existing:
-            # Update last_seen and any changed fields
-            existing.last_seen = datetime.utcnow()
-            existing.price = item.price
-            existing.is_active = True
-            existing.deactivated_at = None  # Clear if reactivated
-            existing.last_scrape_run_id = scrape_run_id
-            if item.images:
-                existing.images = item.images
-            if item.latitude:
-                existing.latitude = item.latitude
-            if item.longitude:
-                existing.longitude = item.longitude
-            if item.neighborhood:
-                existing.neighborhood = item.neighborhood
-                existing.neighborhood_nta = item.neighborhood  # NTA from geo lookup
-            if item.laundry_type:
-                existing.laundry_type = item.laundry_type
-            updated_count += 1
-        else:
-            # Create new listing
-            new_listing = Listing(
-                external_id=item.external_id,
-                source=item.source,
-                url=item.url,
-                title=item.title,
-                price=item.price,
-                bedrooms=item.bedrooms,
-                bathrooms=item.bathrooms,
-                neighborhood=item.neighborhood,
-                neighborhood_nta=item.neighborhood,  # NTA from geo lookup
-                latitude=item.latitude,
-                longitude=item.longitude,
-                address=item.address,
-                sqft=item.sqft,
-                laundry_type=item.laundry_type,
-                amenities=item.amenities,
-                images=item.images,
-                description=item.description,
-                first_seen=datetime.utcnow(),
-                last_seen=datetime.utcnow(),
-                is_active=True,
-                last_scrape_run_id=scrape_run_id
-            )
-            db.add(new_listing)
-            new_count += 1
+            # Check if listing already exists
+            existing = db.query(Listing).filter(
+                Listing.source == item.source,
+                Listing.external_id == item.external_id
+            ).first()
 
-    # Commit this batch
-    db.commit()
+            if existing:
+                # Update last_seen and any changed fields
+                existing.last_seen = datetime.utcnow()
+                existing.price = item.price
+                existing.is_active = True
+                existing.deactivated_at = None  # Clear if reactivated
+                existing.last_scrape_run_id = scrape_run_id
+                if item.images:
+                    existing.images = item.images
+                if item.latitude:
+                    existing.latitude = item.latitude
+                if item.longitude:
+                    existing.longitude = item.longitude
+                if item.neighborhood:
+                    existing.neighborhood = item.neighborhood
+                    existing.neighborhood_nta = item.neighborhood  # NTA from geo lookup
+                if item.laundry_type:
+                    existing.laundry_type = item.laundry_type
+                updated_count += 1
+            else:
+                # Create new listing
+                new_listing = Listing(
+                    external_id=item.external_id,
+                    source=item.source,
+                    url=item.url,
+                    title=item.title,
+                    price=item.price,
+                    bedrooms=item.bedrooms,
+                    bathrooms=item.bathrooms,
+                    neighborhood=item.neighborhood,
+                    neighborhood_nta=item.neighborhood,  # NTA from geo lookup
+                    latitude=item.latitude,
+                    longitude=item.longitude,
+                    address=item.address,
+                    sqft=item.sqft,
+                    laundry_type=item.laundry_type,
+                    amenities=item.amenities,
+                    images=item.images,
+                    description=item.description,
+                    first_seen=datetime.utcnow(),
+                    last_seen=datetime.utcnow(),
+                    is_active=True,
+                    last_scrape_run_id=scrape_run_id
+                )
+                db.add(new_listing)
+                new_count += 1
+
+        # Commit this batch
+        db.commit()
+    finally:
+        db.close()
 
     return new_count, updated_count, scraped_external_ids
 
 
 async def run_scrape_and_store(
-    db: Session,
+    db_factory: Callable[[], Session],
     source: str = "craigslist",
     max_pages: int = 5,
     min_price: Optional[int] = None,
@@ -95,7 +102,8 @@ async def run_scrape_and_store(
 ) -> dict:
     """Run a scrape and store results in the database.
 
-    Saves after each page to avoid losing progress on long scrapes.
+    Uses db_factory to create fresh sessions, avoiding stale connections
+    during long scrapes. Saves after each page to avoid losing progress.
     """
 
     if source == "streeteasy":
@@ -108,7 +116,7 @@ async def run_scrape_and_store(
             neighborhood=neighborhood
         )
         new_count, updated_count, scraped_external_ids = save_listings_to_db(
-            db, scraped, scrape_run_id
+            db_factory, scraped, scrape_run_id
         )
         return {
             "source": source,
@@ -143,10 +151,10 @@ async def run_scrape_and_store(
                         print(f"No more listings found, stopping at page {page_num}")
                         break
 
-                    # Save this page's listings immediately
+                    # Save this page's listings immediately with a fresh DB session
                     if page_listings:
                         new_count, updated_count, external_ids = save_listings_to_db(
-                            db, page_listings, scrape_run_id
+                            db_factory, page_listings, scrape_run_id
                         )
                         total_scraped += len(page_listings)
                         total_new += new_count

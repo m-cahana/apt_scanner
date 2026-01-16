@@ -30,7 +30,9 @@ async def run_scheduled_scrape(
     # Ensure tables exist
     Base.metadata.create_all(bind=engine)
 
+    # Use fresh sessions to avoid connection timeouts during long scrapes
     db = SessionLocal()
+    scrape_run_id = None
 
     try:
         # Create scrape run record
@@ -43,20 +45,28 @@ async def run_scheduled_scrape(
         db.add(scrape_run)
         db.commit()
         db.refresh(scrape_run)
+        scrape_run_id = scrape_run.id
 
-        print(f"[{datetime.utcnow()}] Starting scrape run #{scrape_run.id} for {source}")
+        print(f"[{datetime.utcnow()}] Starting scrape run #{scrape_run_id} for {source}")
 
         # Get current active listing IDs before scrape
         active_before = get_active_external_ids(db, source)
         print(f"[{datetime.utcnow()}] Found {len(active_before)} active listings before scrape")
 
-        # Run the scrape
+        # Close session before long scrape operation
+        db.close()
+
+        # Run the scrape (passes session factory for fresh connections)
         result = await run_scrape_and_store(
-            db=db,
+            db_factory=SessionLocal,
             source=source,
             max_pages=max_pages,
-            scrape_run_id=scrape_run.id
+            scrape_run_id=scrape_run_id
         )
+
+        # Create fresh session for post-scrape operations
+        db = SessionLocal()
+        scrape_run = db.query(ScrapeRun).get(scrape_run_id)
 
         if "error" in result:
             scrape_run.status = "failed"
@@ -75,7 +85,7 @@ async def run_scheduled_scrape(
             source=source,
             active_before=active_before,
             scraped_ids=scraped_ids,
-            scrape_run_id=scrape_run.id
+            scrape_run_id=scrape_run_id
         )
 
         # Update scrape run record
@@ -95,7 +105,7 @@ async def run_scheduled_scrape(
 
         return {
             "status": "success",
-            "scrape_run_id": scrape_run.id,
+            "scrape_run_id": scrape_run_id,
             "source": source,
             "scraped": scrape_run.listings_found,
             "new": scrape_run.listings_new,
@@ -105,14 +115,24 @@ async def run_scheduled_scrape(
 
     except Exception as e:
         print(f"[{datetime.utcnow()}] Scrape failed with exception: {str(e)}")
-        if 'scrape_run' in locals():
-            scrape_run.status = "failed"
-            scrape_run.error_message = str(e)
-            scrape_run.completed_at = datetime.utcnow()
-            db.commit()
+        if scrape_run_id:
+            try:
+                db = SessionLocal()
+                scrape_run = db.query(ScrapeRun).get(scrape_run_id)
+                if scrape_run:
+                    scrape_run.status = "failed"
+                    scrape_run.error_message = str(e)
+                    scrape_run.completed_at = datetime.utcnow()
+                    db.commit()
+                db.close()
+            except Exception:
+                pass  # Don't mask original error
         raise
     finally:
-        db.close()
+        try:
+            db.close()
+        except Exception:
+            pass
 
 
 def main():

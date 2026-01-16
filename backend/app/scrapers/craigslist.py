@@ -1,4 +1,5 @@
 import asyncio
+import random
 import re
 from typing import Optional, List
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
@@ -8,18 +9,19 @@ from ..services.geo import get_neighborhood
 
 
 class CraigslistScraper(BaseScraper):
-    def __init__(self, fetch_details: bool = True, detail_concurrency: int = 5):
+    def __init__(self, fetch_details: bool = True, detail_concurrency: int = 2):
         super().__init__()
         self.source_name = "craigslist"
         self.base_url = "https://newyork.craigslist.org/search/apa"
         self.fetch_details = fetch_details  # Whether to visit detail pages for GPS/images
-        self.detail_concurrency = detail_concurrency  # How many detail pages to fetch in parallel
+        self.detail_concurrency = detail_concurrency  # How many detail pages to fetch in parallel (keep low to avoid blocks)
 
     def _build_url(
         self,
         min_price: Optional[int] = None,
         max_price: Optional[int] = None,
         bedrooms: Optional[int] = None,
+        offset: int = 0,
     ) -> str:
         params = []
 
@@ -34,6 +36,9 @@ class CraigslistScraper(BaseScraper):
         url = self.base_url
         if params:
             url += "?" + "&".join(params)
+
+        # Craigslist uses hash-based pagination: #search=2~thumb~{offset}
+        url += f"#search=2~thumb~{offset}"
 
         return url
 
@@ -228,7 +233,9 @@ class CraigslistScraper(BaseScraper):
 
         async def fetch_with_semaphore(listing: ScrapedListing) -> ScrapedListing:
             async with semaphore:
-                return await self._fetch_detail_page_safe(listing, browser_context)
+                result = await self._fetch_detail_page_safe(listing, browser_context)
+                await asyncio.sleep(random.uniform(0.5, 1.5))  # Rate limit
+                return result
 
         print(f"  Fetching {len(listings)} detail pages ({self.detail_concurrency} parallel)...")
 
@@ -237,39 +244,19 @@ class CraigslistScraper(BaseScraper):
 
         return list(results)
 
-    async def _scroll_and_load_listings(
-        self,
-        page: Page,
-        max_listings: int = 5000,
-        scroll_pause: float = 1.0
-    ) -> List:
-        """Scroll down the page to load all listings via infinite scroll."""
-        all_pids = set()
-        no_new_count = 0
-        max_no_new = 5  # Stop after 5 scrolls with no new listings
+    async def _scrape_page(self, page: Page) -> List[ScrapedListing]:
+        """Extract all listings from the current page."""
+        listings = []
+        results = await page.query_selector_all("[data-pid]")
 
-        while len(all_pids) < max_listings and no_new_count < max_no_new:
-            # Get current listings
-            results = await page.query_selector_all("[data-pid]")
-            current_pids = set()
-            for r in results:
-                pid = await r.get_attribute("data-pid")
-                if pid:
-                    current_pids.add(pid)
+        seen_ids = set()
+        for result in results:
+            listing = await self._extract_listing_from_result(result, page)
+            if listing and listing.price > 0 and listing.external_id not in seen_ids:
+                seen_ids.add(listing.external_id)
+                listings.append(listing)
 
-            new_pids = current_pids - all_pids
-            if new_pids:
-                all_pids.update(new_pids)
-                no_new_count = 0
-                print(f"  Loaded {len(all_pids)} listings so far...")
-            else:
-                no_new_count += 1
-
-            # Scroll down
-            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            await asyncio.sleep(scroll_pause)
-
-        return await page.query_selector_all("[data-pid]")
+        return listings
 
     async def scrape_batch(
         self,
@@ -279,54 +266,92 @@ class CraigslistScraper(BaseScraper):
         bedrooms: Optional[int] = None,
         max_listings: int = 5000,
     ) -> List[ScrapedListing]:
-        """Scrape listings using infinite scroll and parallel detail fetching.
+        """Scrape listings using hash-based pagination and parallel detail fetching.
 
+        Craigslist uses #search=2~thumb~{offset} for pagination.
         Returns fully processed listings ready to save.
         """
-        listings = []
+        all_listings = []
+        seen_ids = set()
         page = await browser_context.new_page()
+        empty_pages = 0
+        max_empty_pages = 8  # Stop after 8 consecutive empty scrolls
 
         try:
-            url = self._build_url(
-                min_price=min_price,
-                max_price=max_price,
-                bedrooms=bedrooms
-            )
+            # Build base URL (without hash) for initial load
+            params = []
+            if min_price:
+                params.append(f"min_price={min_price}")
+            if max_price:
+                params.append(f"max_price={max_price}")
+            if bedrooms is not None:
+                params.append(f"min_bedrooms={bedrooms}")
+                params.append(f"max_bedrooms={bedrooms}")
 
-            print(f"Scraping: {url}")
+            base_url = self.base_url
+            if params:
+                base_url += "?" + "&".join(params)
 
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # Initial page load - force thumb (list) view, not gallery
+            initial_url = f"{base_url}#search=2~thumb~0~0~0~0~0"
+            print(f"Loading: {initial_url}")
+            await page.goto(initial_url, wait_until="networkidle", timeout=60000)
             await asyncio.sleep(2)
 
-            # Scroll to load all listings
-            print("Loading listings via scroll...")
-            results = await self._scroll_and_load_listings(page, max_listings)
+            scroll_count = 0
+            max_scrolls = 200  # Safety limit
 
-            if not results:
-                print("No listings found")
-                return []
+            # Click on page to ensure focus
+            await page.click("body")
+            await asyncio.sleep(0.5)
 
-            print(f"Found {len(results)} listing elements, extracting data...")
+            while len(all_listings) < max_listings and empty_pages < max_empty_pages and scroll_count < max_scrolls:
+                # Extract listings from current view
+                page_listings = await self._scrape_page(page)
 
-            # Extract basic info from search results
-            seen_ids = set()
-            for result in results:
-                listing = await self._extract_listing_from_result(result, page)
-                if listing and listing.price > 0 and listing.external_id not in seen_ids:
-                    seen_ids.add(listing.external_id)
-                    listings.append(listing)
+                # Filter out duplicates
+                new_listings = []
+                for listing in page_listings:
+                    if listing.external_id not in seen_ids:
+                        seen_ids.add(listing.external_id)
+                        new_listings.append(listing)
 
-            print(f"Extracted {len(listings)} unique valid listings")
+                if new_listings:
+                    all_listings.extend(new_listings)
+                    empty_pages = 0
+                    print(f"  Found {len(new_listings)} new (total: {len(all_listings)}, scroll #{scroll_count})")
+                else:
+                    empty_pages += 1
+                    scroll_info = await page.evaluate("""
+                        () => ({
+                            scrollY: window.scrollY,
+                            bodyHeight: document.body.scrollHeight,
+                            hash: window.location.hash,
+                            pids: Array.from(document.querySelectorAll('[data-pid]')).slice(0, 5).map(el => el.getAttribute('data-pid'))
+                        })
+                    """)
+                    print(f"  No new listings (empty: {empty_pages}/{max_empty_pages}, scroll #{scroll_count})")
+                    print(f"    Debug: scrollY={scroll_info['scrollY']}, hash={scroll_info['hash']}")
+                    print(f"    First 5 PIDs: {scroll_info['pids']}")
+
+                # Scroll using JavaScript - most reliable method
+                scroll_count += 1
+                scroll_amount = random.randint(3000, 5000)  # Larger scrolls to load more content
+                await page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+
+                await asyncio.sleep(random.uniform(1.5, 2.5))  # Faster but still rate-limited
+
+            print(f"Extracted {len(all_listings)} unique valid listings")
 
         finally:
             await page.close()
 
         # Fetch detail pages in parallel for GPS and images
-        if self.fetch_details and listings:
-            listings = await self._fetch_details_parallel(listings, browser_context)
+        if self.fetch_details and all_listings:
+            all_listings = await self._fetch_details_parallel(all_listings, browser_context)
             print(f"  Completed all detail pages")
 
-        return listings
+        return all_listings
 
     async def scrape(
         self,
@@ -345,8 +370,16 @@ class CraigslistScraper(BaseScraper):
             bedrooms: Number of bedrooms filter
         """
         context = await self.browser.new_context(
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            viewport={"width": 1920, "height": 1080},
         )
+        # Add stealth script to avoid detection
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            window.chrome = {runtime: {}};
+        """)
 
         try:
             return await self.scrape_batch(

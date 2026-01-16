@@ -39,7 +39,13 @@ class BaseScraper(ABC):
 
     async def start(self):
         self._playwright = await async_playwright().start()
-        self.browser = await self._playwright.chromium.launch(headless=True)
+        self.browser = await self._playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+            ]
+        )
 
     async def stop(self):
         if self.browser:

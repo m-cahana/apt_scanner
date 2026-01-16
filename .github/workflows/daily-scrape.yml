@@ -14,10 +14,10 @@ on:
         options:
           - craigslist
           - all
-      max_pages:
-        description: 'Max pages to scrape'
+      max_listings:
+        description: 'Max listings to scrape'
         required: false
-        default: '10'
+        default: '5000'
         type: string
 
 env:
@@ -51,11 +51,11 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
           SCRAPE_SOURCE: ${{ github.event.inputs.source || 'craigslist' }}
-          MAX_PAGES: ${{ github.event.inputs.max_pages || '10' }}
+          MAX_LISTINGS: ${{ github.event.inputs.max_listings || '5000' }}
         run: |
           python -m app.scripts.scheduled_scrape \
             --source "$SCRAPE_SOURCE" \
-            --max-pages "$MAX_PAGES" \
+            --max-listings "$MAX_LISTINGS" \
             --triggered-by "scheduled"
 
       - name: Notify on failure

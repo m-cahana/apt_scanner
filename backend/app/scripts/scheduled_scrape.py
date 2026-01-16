@@ -22,7 +22,7 @@ from app.services.offmarket_service import mark_offmarket_listings, get_active_e
 
 async def run_scheduled_scrape(
     source: str,
-    max_pages: int,
+    max_listings: int = 5000,
     triggered_by: str = "scheduled"
 ) -> dict:
     """Execute a scheduled scrape with full logging and off-market detection."""
@@ -60,7 +60,7 @@ async def run_scheduled_scrape(
         result = await run_scrape_and_store(
             db_factory=SessionLocal,
             source=source,
-            max_pages=max_pages,
+            max_listings=max_listings,
             scrape_run_id=scrape_run_id
         )
 
@@ -138,15 +138,15 @@ async def run_scheduled_scrape(
 def main():
     parser = argparse.ArgumentParser(description="Run scheduled apartment scrape")
     parser.add_argument("--source", default="craigslist", help="Source to scrape")
-    parser.add_argument("--max-pages", type=int, default=10, help="Max pages to scrape")
+    parser.add_argument("--max-listings", type=int, default=5000, help="Max listings to scrape")
     parser.add_argument("--triggered-by", default="scheduled", help="Trigger source")
     args = parser.parse_args()
 
-    print(f"Starting scheduled scrape: source={args.source}, max_pages={args.max_pages}")
+    print(f"Starting scheduled scrape: source={args.source}, max_listings={args.max_listings}")
 
     result = asyncio.run(run_scheduled_scrape(
         source=args.source,
-        max_pages=args.max_pages,
+        max_listings=args.max_listings,
         triggered_by=args.triggered_by
     ))
 

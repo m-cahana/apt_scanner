@@ -1,6 +1,6 @@
 import asyncio
 import re
-from typing import Optional
+from typing import Optional, List
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeout
 
 from .base import BaseScraper, ScrapedListing
@@ -8,19 +8,18 @@ from ..services.geo import get_neighborhood
 
 
 class CraigslistScraper(BaseScraper):
-    def __init__(self, fetch_details: bool = True):
+    def __init__(self, fetch_details: bool = True, detail_concurrency: int = 5):
         super().__init__()
         self.source_name = "craigslist"
         self.base_url = "https://newyork.craigslist.org/search/apa"
         self.fetch_details = fetch_details  # Whether to visit detail pages for GPS/images
+        self.detail_concurrency = detail_concurrency  # How many detail pages to fetch in parallel
 
     def _build_url(
         self,
-        page: int = 0,
         min_price: Optional[int] = None,
         max_price: Optional[int] = None,
         bedrooms: Optional[int] = None,
-        neighborhood: Optional[str] = None
     ) -> str:
         params = []
 
@@ -31,10 +30,6 @@ class CraigslistScraper(BaseScraper):
         if bedrooms is not None:
             params.append(f"min_bedrooms={bedrooms}")
             params.append(f"max_bedrooms={bedrooms}")
-
-        # Craigslist uses offset-based pagination (120 results per page)
-        if page > 0:
-            params.append(f"s={page * 120}")
 
         url = self.base_url
         if params:
@@ -199,136 +194,205 @@ class CraigslistScraper(BaseScraper):
 
         return listing
 
-    async def scrape_single_page(
+    async def _fetch_detail_page_safe(
+        self,
+        listing: ScrapedListing,
+        browser_context
+    ) -> ScrapedListing:
+        """Fetch detail page in a new tab, with error handling."""
+        detail_page = None
+        try:
+            detail_page = await browser_context.new_page()
+            listing = await self._fetch_detail_page(listing, detail_page)
+
+            # Classify neighborhood using GPS if available
+            if listing.latitude and listing.longitude:
+                nta_name = get_neighborhood(listing.latitude, listing.longitude)
+                if nta_name:
+                    listing.neighborhood = nta_name
+        except Exception as e:
+            print(f"    Error fetching {listing.external_id}: {e}")
+        finally:
+            if detail_page:
+                await detail_page.close()
+
+        return listing
+
+    async def _fetch_details_parallel(
+        self,
+        listings: List[ScrapedListing],
+        browser_context
+    ) -> List[ScrapedListing]:
+        """Fetch detail pages in parallel with limited concurrency."""
+        semaphore = asyncio.Semaphore(self.detail_concurrency)
+
+        async def fetch_with_semaphore(listing: ScrapedListing) -> ScrapedListing:
+            async with semaphore:
+                return await self._fetch_detail_page_safe(listing, browser_context)
+
+        print(f"  Fetching {len(listings)} detail pages ({self.detail_concurrency} parallel)...")
+
+        # Process in parallel
+        results = await asyncio.gather(*[fetch_with_semaphore(l) for l in listings])
+
+        return list(results)
+
+    async def _scroll_and_load_listings(
         self,
         page: Page,
-        page_num: int,
+        max_listings: int = 5000,
+        scroll_pause: float = 1.0
+    ) -> List:
+        """Scroll down the page to load all listings via infinite scroll."""
+        all_pids = set()
+        no_new_count = 0
+        max_no_new = 5  # Stop after 5 scrolls with no new listings
+
+        while len(all_pids) < max_listings and no_new_count < max_no_new:
+            # Get current listings
+            results = await page.query_selector_all("[data-pid]")
+            current_pids = set()
+            for r in results:
+                pid = await r.get_attribute("data-pid")
+                if pid:
+                    current_pids.add(pid)
+
+            new_pids = current_pids - all_pids
+            if new_pids:
+                all_pids.update(new_pids)
+                no_new_count = 0
+                print(f"  Loaded {len(all_pids)} listings so far...")
+            else:
+                no_new_count += 1
+
+            # Scroll down
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            await asyncio.sleep(scroll_pause)
+
+        return await page.query_selector_all("[data-pid]")
+
+    async def scrape_batch(
+        self,
+        browser_context,
         min_price: Optional[int] = None,
         max_price: Optional[int] = None,
         bedrooms: Optional[int] = None,
-        neighborhood: Optional[str] = None
-    ) -> list[ScrapedListing]:
-        """Scrape a single page and fetch detail pages for those listings.
+        max_listings: int = 5000,
+    ) -> List[ScrapedListing]:
+        """Scrape listings using infinite scroll and parallel detail fetching.
 
-        Returns fully processed listings for this page, ready to save.
+        Returns fully processed listings ready to save.
         """
         listings = []
-
-        url = self._build_url(
-            page=page_num,
-            min_price=min_price,
-            max_price=max_price,
-            bedrooms=bedrooms,
-            neighborhood=neighborhood
-        )
-
-        print(f"Scraping: {url}")
+        page = await browser_context.new_page()
 
         try:
+            url = self._build_url(
+                min_price=min_price,
+                max_price=max_price,
+                bedrooms=bedrooms
+            )
+
+            print(f"Scraping: {url}")
+
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(2)
-        except PlaywrightTimeout:
-            print(f"Timeout loading page {page_num}")
-            return []
 
-        # Find all listing results - Craigslist uses data-pid for listing cards
-        results = await page.query_selector_all(".cl-search-result[data-pid], .gallery-card[data-pid], [data-pid]")
+            # Scroll to load all listings
+            print("Loading listings via scroll...")
+            results = await self._scroll_and_load_listings(page, max_listings)
 
-        if not results:
-            print(f"No listings found on page {page_num}")
-            return []
+            if not results:
+                print("No listings found")
+                return []
 
-        for result in results:
-            listing = await self._extract_listing_from_result(result, page)
-            if listing and listing.price > 0:
-                listings.append(listing)
+            print(f"Found {len(results)} listing elements, extracting data...")
 
-        print(f"Page {page_num}: Found {len(results)} results, {len(listings)} valid listings")
+            # Extract basic info from search results
+            seen_ids = set()
+            for result in results:
+                listing = await self._extract_listing_from_result(result, page)
+                if listing and listing.price > 0 and listing.external_id not in seen_ids:
+                    seen_ids.add(listing.external_id)
+                    listings.append(listing)
 
-        # Fetch detail pages for GPS and images if enabled
+            print(f"Extracted {len(listings)} unique valid listings")
+
+        finally:
+            await page.close()
+
+        # Fetch detail pages in parallel for GPS and images
         if self.fetch_details and listings:
-            print(f"  Fetching detail pages for {len(listings)} listings...")
-            for i, listing in enumerate(listings):
-                try:
-                    listing = await self._fetch_detail_page(listing, page)
-
-                    # Classify neighborhood using GPS if available
-                    if listing.latitude and listing.longitude:
-                        nta_name = get_neighborhood(listing.latitude, listing.longitude)
-                        if nta_name:
-                            listing.neighborhood = nta_name
-                except Exception as e:
-                    print(f"    Error processing listing {i}: {e}")
-
-                # Small delay to avoid rate limiting
-                await asyncio.sleep(0.5)
-
-            print(f"  Completed detail pages for page {page_num}")
+            listings = await self._fetch_details_parallel(listings, browser_context)
+            print(f"  Completed all detail pages")
 
         return listings
 
     async def scrape(
         self,
-        max_pages: int = 5,
+        max_listings: int = 5000,
         min_price: Optional[int] = None,
         max_price: Optional[int] = None,
         bedrooms: Optional[int] = None,
-        neighborhood: Optional[str] = None
-    ) -> list[ScrapedListing]:
-        """Scrape all pages and return combined listings.
+        **kwargs  # Accept but ignore old params like max_pages, neighborhood
+    ) -> List[ScrapedListing]:
+        """Scrape listings using infinite scroll.
 
-        Note: For incremental saving, use scrape_single_page() instead.
+        Args:
+            max_listings: Maximum number of listings to load via scrolling
+            min_price: Minimum price filter
+            max_price: Maximum price filter
+            bedrooms: Number of bedrooms filter
         """
-        listings = []
-        page = await self.get_page()
+        context = await self.browser.new_context(
+            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        )
 
         try:
-            for page_num in range(max_pages):
-                page_listings = await self.scrape_single_page(
-                    page=page,
-                    page_num=page_num,
-                    min_price=min_price,
-                    max_price=max_price,
-                    bedrooms=bedrooms,
-                    neighborhood=neighborhood
-                )
-
-                if not page_listings and page_num > 0:
-                    print(f"No more listings found, stopping at page {page_num}")
-                    break
-
-                listings.extend(page_listings)
-
-                # Small delay between pages
-                await asyncio.sleep(1)
-
+            return await self.scrape_batch(
+                browser_context=context,
+                min_price=min_price,
+                max_price=max_price,
+                bedrooms=bedrooms,
+                max_listings=max_listings
+            )
         finally:
-            await page.close()
-
-        return listings
+            await context.close()
 
 
 async def run_craigslist_scraper(
-    max_pages: int = 3,
+    max_listings: int = 5000,
     min_price: Optional[int] = None,
     max_price: Optional[int] = None,
     bedrooms: Optional[int] = None,
-    neighborhood: Optional[str] = None
-) -> list[ScrapedListing]:
-    async with CraigslistScraper() as scraper:
+    detail_concurrency: int = 5,
+    **kwargs  # Accept old params like max_pages for backwards compatibility
+) -> List[ScrapedListing]:
+    """Run the Craigslist scraper.
+
+    Args:
+        max_listings: Maximum listings to load via scroll (default 5000)
+        min_price: Minimum price filter
+        max_price: Maximum price filter
+        bedrooms: Number of bedrooms filter
+        detail_concurrency: How many detail pages to fetch in parallel
+    """
+    async with CraigslistScraper(detail_concurrency=detail_concurrency) as scraper:
         return await scraper.scrape(
-            max_pages=max_pages,
+            max_listings=max_listings,
             min_price=min_price,
             max_price=max_price,
-            bedrooms=bedrooms,
-            neighborhood=neighborhood
+            bedrooms=bedrooms
         )
 
 
 if __name__ == "__main__":
     async def test():
-        listings = await run_craigslist_scraper(max_pages=1, max_price=4000, bedrooms=1)
+        listings = await run_craigslist_scraper(max_listings=100, max_price=4000, bedrooms=1)
+        print(f"Found {len(listings)} listings")
         for listing in listings[:5]:
             print(f"{listing.title[:50]} - ${listing.price} - {listing.bedrooms}BR - {listing.neighborhood}")
+            if listing.latitude:
+                print(f"  GPS: {listing.latitude}, {listing.longitude}")
 
     asyncio.run(test())

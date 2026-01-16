@@ -5,17 +5,19 @@ from sqlalchemy.orm import Session
 from ..models import Listing
 from ..scrapers.base import ScrapedListing
 from ..scrapers.streeteasy import run_streeteasy_scraper
-from ..scrapers.craigslist import CraigslistScraper
+from ..scrapers.craigslist import run_craigslist_scraper
 
 
 def save_listings_to_db(
     db_factory: Callable[[], Session],
     scraped: List[ScrapedListing],
-    scrape_run_id: Optional[int] = None
+    scrape_run_id: Optional[int] = None,
+    batch_size: int = 100
 ) -> tuple[int, int, Set[str]]:
     """Save a batch of scraped listings to the database.
 
     Uses db_factory to create a fresh session, avoiding stale connections.
+    Commits in batches for resilience.
     Returns (new_count, updated_count, external_ids)
     """
     new_count = 0
@@ -26,7 +28,7 @@ def save_listings_to_db(
     db = db_factory()
 
     try:
-        for item in scraped:
+        for i, item in enumerate(scraped):
             scraped_external_ids.add(item.external_id)
 
             # Check if listing already exists
@@ -82,7 +84,12 @@ def save_listings_to_db(
                 db.add(new_listing)
                 new_count += 1
 
-        # Commit this batch
+            # Commit in batches
+            if (i + 1) % batch_size == 0:
+                db.commit()
+                print(f"  Saved batch: {i + 1}/{len(scraped)} listings")
+
+        # Final commit
         db.commit()
     finally:
         db.close()
@@ -93,89 +100,53 @@ def save_listings_to_db(
 async def run_scrape_and_store(
     db_factory: Callable[[], Session],
     source: str = "craigslist",
-    max_pages: int = 5,
+    max_listings: int = 5000,
     min_price: Optional[int] = None,
     max_price: Optional[int] = None,
     bedrooms: Optional[int] = None,
-    neighborhood: Optional[str] = None,
-    scrape_run_id: Optional[int] = None
+    scrape_run_id: Optional[int] = None,
+    **kwargs  # Accept old params like max_pages for backwards compatibility
 ) -> dict:
     """Run a scrape and store results in the database.
 
     Uses db_factory to create fresh sessions, avoiding stale connections
-    during long scrapes. Saves after each page to avoid losing progress.
+    during long scrapes.
     """
 
     if source == "streeteasy":
-        # StreetEasy still uses old approach (TODO: refactor if needed)
         scraped = await run_streeteasy_scraper(
-            max_pages=max_pages,
+            max_pages=kwargs.get("max_pages", 5),
+            min_price=min_price,
+            max_price=max_price,
+            bedrooms=bedrooms
+        )
+    elif source == "craigslist":
+        # Use scroll-based scraping with parallel detail fetching
+        scraped = await run_craigslist_scraper(
+            max_listings=max_listings,
             min_price=min_price,
             max_price=max_price,
             bedrooms=bedrooms,
-            neighborhood=neighborhood
+            detail_concurrency=5  # Fetch 5 detail pages in parallel
         )
-        new_count, updated_count, scraped_external_ids = save_listings_to_db(
-            db_factory, scraped, scrape_run_id
-        )
-        return {
-            "source": source,
-            "scraped": len(scraped),
-            "new": new_count,
-            "updated": updated_count,
-            "scraped_external_ids": scraped_external_ids
-        }
-
-    elif source == "craigslist":
-        # Craigslist: process and save page by page
-        total_scraped = 0
-        total_new = 0
-        total_updated = 0
-        all_external_ids: Set[str] = set()
-
-        async with CraigslistScraper() as scraper:
-            page = await scraper.get_page()
-
-            try:
-                for page_num in range(max_pages):
-                    page_listings = await scraper.scrape_single_page(
-                        page=page,
-                        page_num=page_num,
-                        min_price=min_price,
-                        max_price=max_price,
-                        bedrooms=bedrooms,
-                        neighborhood=neighborhood
-                    )
-
-                    if not page_listings and page_num > 0:
-                        print(f"No more listings found, stopping at page {page_num}")
-                        break
-
-                    # Save this page's listings immediately with a fresh DB session
-                    if page_listings:
-                        new_count, updated_count, external_ids = save_listings_to_db(
-                            db_factory, page_listings, scrape_run_id
-                        )
-                        total_scraped += len(page_listings)
-                        total_new += new_count
-                        total_updated += updated_count
-                        all_external_ids.update(external_ids)
-
-                        print(f"  Saved page {page_num}: {new_count} new, {updated_count} updated (total: {total_scraped})")
-
-            finally:
-                await page.close()
-
-        return {
-            "source": source,
-            "scraped": total_scraped,
-            "new": total_new,
-            "updated": total_updated,
-            "scraped_external_ids": all_external_ids
-        }
-
     else:
         return {"error": f"Unknown source: {source}"}
+
+    print(f"Scraped {len(scraped)} listings, saving to database...")
+
+    new_count, updated_count, scraped_external_ids = save_listings_to_db(
+        db_factory, scraped, scrape_run_id
+    )
+
+    print(f"Saved: {new_count} new, {updated_count} updated")
+
+    return {
+        "source": source,
+        "scraped": len(scraped),
+        "new": new_count,
+        "updated": updated_count,
+        "scraped_external_ids": scraped_external_ids
+    }
 
 
 def mark_stale_listings(db: Session, source: str, hours_threshold: int = 24):

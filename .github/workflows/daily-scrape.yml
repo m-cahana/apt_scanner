@@ -1,0 +1,67 @@
+name: Daily Apartment Scrape
+
+on:
+  schedule:
+    # Run at 6 AM and 6 PM UTC (1 AM and 1 PM EST)
+    - cron: '0 6,18 * * *'
+  workflow_dispatch:  # Allow manual triggering
+    inputs:
+      source:
+        description: 'Source to scrape'
+        required: false
+        default: 'craigslist'
+        type: choice
+        options:
+          - craigslist
+          - all
+      max_pages:
+        description: 'Max pages to scrape'
+        required: false
+        default: '10'
+        type: string
+
+env:
+  DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Run scraper
+        working-directory: backend
+        env:
+          SCRAPE_SOURCE: ${{ github.event.inputs.source || 'craigslist' }}
+          MAX_PAGES: ${{ github.event.inputs.max_pages || '10' }}
+        run: |
+          python -m app.scripts.scheduled_scrape \
+            --source "$SCRAPE_SOURCE" \
+            --max-pages "$MAX_PAGES" \
+            --triggered-by "scheduled"
+
+      - name: Notify on failure
+        if: failure() && env.SLACK_WEBHOOK_URL != ''
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":"Apartment scrape failed! Check GitHub Actions for details."}' \
+            "$SLACK_WEBHOOK_URL"

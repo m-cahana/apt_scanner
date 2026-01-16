@@ -104,12 +104,14 @@ class CraigslistScraper(BaseScraper):
             if bath_match:
                 bathrooms = float(bath_match.group(1))
 
-            # Get thumbnail image if available
+            # Get thumbnail image if available, convert to larger size
             images = []
             img_elem = await result.query_selector("img")
             if img_elem:
                 img_src = await img_elem.get_attribute("src")
                 if img_src and not img_src.startswith("data:"):
+                    # Convert thumbnail to larger image (600x450)
+                    img_src = re.sub(r'_\d+x\d+\.', '_600x450.', img_src)
                     images.append(img_src)
 
             return ScrapedListing(

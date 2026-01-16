@@ -33,6 +33,7 @@ export function ListingCard({ listing, onFavoriteToggle }: ListingCardProps) {
           <img
             src={listing.images[0]}
             alt={listing.title}
+            loading="lazy"
             className="w-full h-full object-cover"
           />
         ) : (
